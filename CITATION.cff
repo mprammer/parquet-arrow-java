@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+title: parquet-arrow-java
+abstract: >-
+  parquet-arrow-java is a pure-JVM, Hadoop-free bidirectional bridge between
+  in-memory Apache Arrow and standard Apache Parquet. It writes an Arrow
+  VectorSchemaRoot to a standard Parquet file and reads Parquet back into
+  reusable Arrow vectors, without requiring an Apache Hadoop dependency in the
+  consumer's runtime.
+type: software
+version: 0.1.0
+url: "https://github.com/mprammer/parquet-arrow-java"
+repository-code: "https://github.com/mprammer/parquet-arrow-java"
+license: Apache-2.0
+authors:
+  - given-names: Martin
+    family-names: Prammer
+    email: "parquet-arrow@spiraldb.com"
+    affiliation: Spiral
+keywords:
+  - parquet
+  - arrow
+  - jvm
+  - hadoop-free
+  - columnar
+message: >-
+  If you use parquet-arrow-java in academic work, please cite it using the metadata
+  in this file.

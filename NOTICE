@@ -1,0 +1,29 @@
+parquet-arrow-java
+Copyright 2026 parquet-arrow-java contributors
+
+This product includes software developed at strategicblue/parquet-floor
+(https://github.com/strategicblue/parquet-floor), licensed under the Apache
+License, Version 2.0. The minimal org.apache.hadoop.* shim classes under
+parquet-arrow-core/src/main/java/org/apache/hadoop/ are vendored from
+parquet-floor to satisfy parquet-java's static class-load references without the
+Apache Hadoop dependency tree. See docs/provenance.md.
+
+This product includes adapted Apache-2.0 implementation patterns from the
+following projects. The local implementation remains subject to this product's
+license; the upstream projects retain their own copyrights and licenses.
+
+Apache Iceberg
+https://github.com/apache/iceberg
+The compositional Parquet value-writer/value-reader and local-file I/O patterns
+were used as design precedents for the Arrow-indexed writer and reader plans.
+
+Apache parquet-java
+https://github.com/apache/parquet-java
+The ParquetFileWriter, MessageColumnIO, page-store, and direct InputFile /
+OutputFile lifecycle surfaces are used through the parquet-java 1.17.1 API and
+informed the corresponding adapters.
+
+Apache Arrow Java
+https://github.com/apache/arrow-java
+The ArrowReader lifecycle and Arrow IPC schema metadata codec patterns are used
+against Arrow Java 19.0.0.

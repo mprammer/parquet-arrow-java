@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Minimal token scope: the job is read-only (checkout + build + tests); it
+# posts no comments, uploads no artifacts, and writes nothing to the repo.
+permissions:
+  contents: read
+
+# Cancel in-progress runs when a new commit lands on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # `check` compiles both modules and runs the full test suite. The
+      # real-corpus conformance test is opt-in (PA_ARROW_CORPUS) and skips here,
+      # so this run is fully hermetic.
+      - name: Build and test
+        run: ./gradlew check --no-daemon
+
+      # Verify the artifact publishes and the consume path is intact.
+      - name: Publish to Maven local
+        run: ./gradlew :parquet-arrow-core:publishToMavenLocal --no-daemon

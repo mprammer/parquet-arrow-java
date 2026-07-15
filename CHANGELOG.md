@@ -4,6 +4,14 @@ All notable changes to parquet-arrow-java are documented here. The format is bas
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2]
+
+### Fixed
+
+- Documentation only: the README still advertised the `0.1.0` dependency
+  coordinate (Gradle + Maven snippets and the "cut" note) after 0.1.1 shipped.
+  Bumped every version reference to match the released artifact. No code change.
+
 ## [0.1.1]
 
 ### Fixed
@@ -47,5 +55,6 @@ in-memory Apache Arrow and standard Apache Parquet.
 - Publishing is local-only (`publishToMavenLocal`); there is no remote Maven
   repository.
 
+[0.1.2]: https://github.com/mprammer/parquet-arrow-java/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mprammer/parquet-arrow-java/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mprammer/parquet-arrow-java/releases/tag/v0.1.0

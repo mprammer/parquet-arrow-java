@@ -19,7 +19,7 @@ The API targets JDK 17 and uses Apache Arrow Java 19.0.0. The current artifact
 coordinates are:
 
 ```text
-dev.spiraldb.parquet.arrow:parquet-arrow-core:0.1.0
+dev.spiraldb.parquet.arrow:parquet-arrow-core:0.1.2
 ```
 
 Maven consumers use:
@@ -28,7 +28,7 @@ Maven consumers use:
 <dependency>
   <groupId>dev.spiraldb.parquet.arrow</groupId>
   <artifactId>parquet-arrow-core</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 
@@ -148,14 +148,14 @@ This README is the v1 public contract. Dependency versions and the
 reproducible-build policy are recorded in
 [`docs/provenance.md`](docs/provenance.md).
 
-This is the `0.1.0` cut. Publishing is intentionally local-only: there is no
+This is the `0.1.2` cut. Publishing is intentionally local-only: there is no
 remote Maven repository, and none is promised — consume it from source. With
 access to the repository, a consumer publishes the artifacts to its local Maven
 cache and depends on them by coordinate:
 
 ```bash
 ./gradlew publishToMavenLocal
-# then, in the consumer: implementation("dev.spiraldb.parquet.arrow:parquet-arrow-core:0.1.0")
+# then, in the consumer: implementation("dev.spiraldb.parquet.arrow:parquet-arrow-core:0.1.2")
 ```
 
 The `parquet-arrow-core` dependency set is pinned in

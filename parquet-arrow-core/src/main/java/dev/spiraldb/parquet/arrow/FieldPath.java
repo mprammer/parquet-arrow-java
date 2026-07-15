@@ -14,7 +14,9 @@ public final class FieldPath {
   public static FieldPath of(String... segments) {
     Objects.requireNonNull(segments, "segments");
     if (segments.length == 0) throw new IllegalArgumentException("a field path is not empty");
-    for (String segment : segments) if (segment == null || segment.isEmpty()) throw new IllegalArgumentException("field path contains an empty segment");
+    // An empty-string segment is a valid field name — Arrow and Parquet both permit unnamed
+    // columns (e.g. an index column written as "") — so only a null segment is rejected.
+    for (String segment : segments) if (segment == null) throw new IllegalArgumentException("field path contains a null segment");
     return new FieldPath(Arrays.asList(segments.clone()));
   }
   public List<String> segments() { return segments; }

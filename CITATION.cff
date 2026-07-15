@@ -7,7 +7,7 @@ abstract: >-
   reusable Arrow vectors, without requiring an Apache Hadoop dependency in the
   consumer's runtime.
 type: software
-version: 0.1.0
+version: 0.1.1
 url: "https://github.com/mprammer/parquet-arrow-java"
 repository-code: "https://github.com/mprammer/parquet-arrow-java"
 license: Apache-2.0

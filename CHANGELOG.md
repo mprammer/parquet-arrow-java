@@ -4,6 +4,17 @@ All notable changes to parquet-arrow-java are documented here. The format is bas
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1]
+
+### Fixed
+
+- Reader rejected valid Parquet files containing an **empty-named column** (`""`,
+  e.g. an unnamed index column) with `InvalidParquetFileException`. The write side
+  already produced valid files for these; the default all-columns projection built
+  a `FieldPath` from the empty name and `FieldPath.of` banned empty segments.
+  Empty-string segments are now accepted (they are valid Arrow/Parquet field
+  names); only null segments are rejected.
+
 ## [0.1.0]
 
 Initial public release: a pure-JVM, Hadoop-free bidirectional bridge between
@@ -36,4 +47,5 @@ in-memory Apache Arrow and standard Apache Parquet.
 - Publishing is local-only (`publishToMavenLocal`); there is no remote Maven
   repository.
 
+[0.1.1]: https://github.com/mprammer/parquet-arrow-java/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mprammer/parquet-arrow-java/releases/tag/v0.1.0

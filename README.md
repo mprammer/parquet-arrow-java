@@ -97,10 +97,34 @@ dependencies) when launching Java 17.
 v1 translates Arrow values to standard Parquet and standard Parquet values back
 to Arrow. It supports booleans; signed and unsigned integers; float32/float64;
 UTF-8 and binary values (including large-offset variants); fixed-size binary;
-decimal128/decimal256; dates, times, timestamps; duration; structs; canonical
-three-level lists and maps; and Arrow dictionary inputs. Float16, intervals,
-unions, run-end encoding, list views, and non-canonical legacy nested encodings
-are rejected with a typed `ParquetArrowException`.
+decimal128/decimal256; dates, times, timestamps; duration; structs; lists and
+maps; and Arrow dictionary inputs. Float16, intervals, unions, run-end encoding
+and list views are rejected with a typed `ParquetArrowException`.
+
+Lists and maps follow parquet-format's
+[LogicalTypes.md](https://github.com/apache/parquet-format/blob/master/LogicalTypes.md)
+"Lists" and "Maps" sections. The reader does not enforce the level names, as
+the spec's backward-compatibility rules direct: a 3-level `LIST` reads under
+any repeated-group and element names, 2-level and legacy lists resolve by the
+spec's five rules (their elements are required), map key and value are
+positional, and a `MAP_KEY_VALUE` group outside a `MAP` reads as a map. The
+element keeps its Parquet name. An unannotated repeated field (outside any
+`LIST`/`MAP`) is rejected with `UnsupportedNestedEncodingException`, as is a
+`MAP` without a value field.
+
+The writer emits the names the spec requires (`list`/`element`,
+`key_value`/`key`/`value`) whatever the Arrow schema calls those levels, and
+the Arrow names travel in `ARROW:schema`: reading a file back restores them
+from that hint, so the Arrow schema round-trips exactly. A reader that ignores
+`ARROW:schema` sees the spec's names.
+
+A struct carrying the Arrow canonical extension `arrow.parquet.variant` (a
+Variant's binary `metadata` and `value`, plus `typed_value` when shredded) is
+written as a Parquet `VARIANT` group, and a `VARIANT` group reads back as that
+struct with the extension named in its field metadata. The values cross as
+their Variant binary encoding: the bridge neither decodes nor shreds them. A
+`VARIANT` storage struct of any other shape is rejected with
+`UnsupportedParquetTypeException`, on either side.
 
 Parquet has no second-precision temporal type, so Arrow `SECOND`-unit times and
 timestamps are promoted to Parquet `MILLIS` on write: the values scale and the
@@ -122,8 +146,9 @@ counter.
 `ARROW:schema` footer metadata is advisory. Parquet physical/logical types
 define the readable value domain; an absent, malformed, unsupported, or stale
 hint never rejects valid values. The reader uses only safe representation
-refinements such as large UTF-8/binary offsets and a timestamp timezone name
-that agrees with Parquet's adjusted-to-UTC bit.
+refinements such as large UTF-8/binary offsets, a timestamp timezone name
+that agrees with Parquet's adjusted-to-UTC bit, and the Arrow names of list
+elements and map entries.
 
 Arrow dictionaries are decoded at the write boundary. Dictionary columns read
 back as ordinary value vectors, not dictionary/index vectors. Duplicate sibling

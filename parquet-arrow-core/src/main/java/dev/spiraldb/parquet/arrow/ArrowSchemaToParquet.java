@@ -57,6 +57,7 @@ public final class ArrowSchemaToParquet {
     // detail leak into Parquet's physical schema.  In particular, a dictionary<Utf8, Int8>
     // is BINARY(UTF8), not an INT8-annotated INT32 leaf.
     if (field.getDictionary() != null) field = valueField(field);
+    if (VariantExtension.isVariant(field)) VariantExtension.requireStorage(field, path);
     Type.Repetition repetition = field.isNullable() ? Type.Repetition.OPTIONAL : Type.Repetition.REQUIRED;
     ArrowType type = field.getType();
     switch (type.getTypeID()) {
@@ -134,7 +135,10 @@ public final class ArrowSchemaToParquet {
         return primitive(repetition, PrimitiveType.PrimitiveTypeName.INT64, field.getName(), null);
       case Struct:
         if (field.getChildren().isEmpty()) unsupported(path, "empty struct has no physical descendant");
-        return group(repetition, field.getName(), null, children(field, path));
+        // An arrow.parquet.variant struct is the VARIANT group's storage: annotate it as one.
+        LogicalTypeAnnotation annotation = VariantExtension.isVariant(field)
+            ? LogicalTypeAnnotation.variantType(VariantExtension.SPEC_VERSION) : null;
+        return group(repetition, field.getName(), annotation, children(field, path));
       case List:
       case LargeList:
       case FixedSizeList:
@@ -160,11 +164,24 @@ public final class ArrowSchemaToParquet {
     return new Field(field.getName(), type, field.getChildren());
   }
 
+  /**
+   * The spec's names, whatever the Arrow names: "It is required that the repeated group of
+   * elements is named list and that its element field is named element", and "that the repeated
+   * group of key-value pairs is named key_value and that its fields are named key and value"
+   * (parquet-format LogicalTypes.md, Lists and Maps). The Arrow names travel in ARROW:schema.
+   */
+  static final String LIST = "list", ELEMENT = "element", KEY_VALUE = "key_value", KEY = "key", VALUE = "value";
+
+  /** The Parquet node for {@code field} under a spec-fixed {@code name}. */
+  private static Type field(Field field, String path, String name) throws UnsupportedParquetTypeException {
+    return field(new Field(name, field.getFieldType(), field.getChildren()), path);
+  }
+
   private static Type list(Field field, String path, Type.Repetition repetition) throws UnsupportedParquetTypeException {
     if (field.getChildren().size() != 1) unsupported(path, "list must have exactly one child");
     Field element = field.getChildren().get(0);
-    Type child = field(element, path + "." + element.getName());
-    GroupType wrapper = group(Type.Repetition.REPEATED, "list", null, List.of(child));
+    Type child = field(element, path + "." + element.getName(), ELEMENT);
+    GroupType wrapper = group(Type.Repetition.REPEATED, LIST, null, List.of(child));
     return group(repetition, field.getName(), LogicalTypeAnnotation.listType(), List.of(wrapper));
   }
 
@@ -174,9 +191,9 @@ public final class ArrowSchemaToParquet {
     if (entry.getChildren().size() != 2) unsupported(path, "map entry must contain key and value");
     Field key = entry.getChildren().get(0);
     if (key.isNullable()) unsupported(path + "." + key.getName(), "map key must be required");
-    Type parquetKey = field(key, path + "." + key.getName());
-    Type parquetValue = field(entry.getChildren().get(1), path + "." + entry.getChildren().get(1).getName());
-    GroupType entries = group(Type.Repetition.REPEATED, "key_value", null, List.of(parquetKey, parquetValue));
+    Type parquetKey = field(key, path + "." + key.getName(), KEY);
+    Type parquetValue = field(entry.getChildren().get(1), path + "." + entry.getChildren().get(1).getName(), VALUE);
+    GroupType entries = group(Type.Repetition.REPEATED, KEY_VALUE, null, List.of(parquetKey, parquetValue));
     return group(repetition, field.getName(), LogicalTypeAnnotation.mapType(), List.of(entries));
   }
 

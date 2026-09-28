@@ -5,6 +5,7 @@ package dev.spiraldb.parquet.arrow;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.TimeUnit;
@@ -36,13 +37,24 @@ public final class ParquetToArrow {
   }
 
   private Field field(Type type, String path) throws UnsupportedParquetTypeException, UnsupportedNestedEncodingException {
-    boolean nullable = type.getRepetition() != Type.Repetition.REQUIRED;
+    // "A repeated field that is neither contained by a LIST- or MAP-annotated group nor annotated
+    // by LIST or MAP should be interpreted as a required list of required elements" (LogicalTypes.md,
+    // Nested Types). That encoding is not supported; reading it as one value per row would drop
+    // the rest. A LIST's repeated element reaches element() below, never this check.
+    if (type.getRepetition() == Type.Repetition.REPEATED)
+      throw new UnsupportedNestedEncodingException("UNANNOTATED_REPEATED at " + path);
+    return field(type, path, type.getRepetition() != Type.Repetition.REQUIRED);
+  }
+  private Field field(Type type, String path, boolean nullable) throws UnsupportedParquetTypeException, UnsupportedNestedEncodingException {
     ArrowType arrow;
     List<Field> children = List.of();
+    Map<String, String> metadata = null;
     LogicalTypeAnnotation annotation = type.getLogicalTypeAnnotation();
     if (annotation instanceof LogicalTypeAnnotation.ListLogicalTypeAnnotation) {
-      Type element = lists.resolve(type, path).element();
-      Field child = field(element, path + "." + element.getName());
+      // The element keeps its Parquet name (a hint restores an Arrow name; see ARROW:schema).
+      ListEncodingResolver.Resolution resolution = lists.resolve(type, path);
+      Type element = resolution.element();
+      Field child = field(element, path + "." + element.getName(), resolution.elementNullable());
       arrow = ArrowType.List.INSTANCE; children = List.of(child);
     } else if (annotation instanceof LogicalTypeAnnotation.MapLogicalTypeAnnotation || annotation instanceof LogicalTypeAnnotation.MapKeyValueTypeAnnotation) {
       MapEncodingResolver.Resolution resolution = maps.resolve(type, path);
@@ -50,6 +62,12 @@ public final class ParquetToArrow {
       Field value = field(resolution.value(), path + "." + resolution.value().getName());
       Field entry = new Field("entries", new FieldType(false, ArrowType.Struct.INSTANCE, null, null), List.of(key, value));
       arrow = new ArrowType.Map(false); children = List.of(entry);
+    } else if (annotation instanceof LogicalTypeAnnotation.VariantLogicalTypeAnnotation) {
+      // The group is the VARIANT column's storage struct; Arrow names it with the extension.
+      requireVariantGroup(type, path);
+      List<Field> nested = new ArrayList<>();
+      for (Type child : type.asGroupType().getFields()) nested.add(field(child, path + "." + child.getName()));
+      arrow = ArrowType.Struct.INSTANCE; children = nested; metadata = VariantExtension.fieldMetadata();
     } else if (!type.isPrimitive()) {
       if (annotation != null) reject(path, "unrecognized group annotation " + annotation);
       if (type.asGroupType().getFieldCount() == 0) reject(path, "empty struct has no physical descendant");
@@ -59,7 +77,31 @@ public final class ParquetToArrow {
     } else {
       arrow = primitive(type.asPrimitiveType(), path);
     }
-    return new Field(type.getName(), new FieldType(nullable, arrow, null, null), children);
+    return new Field(type.getName(), new FieldType(nullable, arrow, null, metadata), children);
+  }
+
+  /**
+   * A VARIANT group as the Parquet spec lays it out: a BINARY {@code metadata}, a BINARY
+   * {@code value} and/or a {@code typed_value}, and nothing else.
+   */
+  private static void requireVariantGroup(Type type, String path) throws UnsupportedParquetTypeException {
+    require(!type.isPrimitive(), path, "VARIANT annotates a group");
+    boolean metadata = false, values = false;
+    for (Type child : type.asGroupType().getFields()) {
+      String name = child.getName(), at = path + "." + name;
+      require(child.getRepetition() != Type.Repetition.REPEATED, at, "a VARIANT field is not repeated");
+      if (name.equals("metadata") || name.equals("value")) {
+        require(child.isPrimitive() && child.asPrimitiveType().getPrimitiveTypeName() == PrimitiveType.PrimitiveTypeName.BINARY
+            && child.getLogicalTypeAnnotation() == null, at, "VARIANT " + name + " must be an unannotated BINARY");
+        if (name.equals("metadata")) metadata = true; else values = true;
+      } else if (name.equals("typed_value")) {
+        values = true;
+      } else {
+        reject(at, "a VARIANT group holds only metadata, value and typed_value");
+      }
+    }
+    require(metadata, path, "a VARIANT group needs a metadata field");
+    require(values, path, "a VARIANT group needs a value or typed_value field");
   }
 
   private static ArrowType primitive(PrimitiveType type, String path) throws UnsupportedParquetTypeException {

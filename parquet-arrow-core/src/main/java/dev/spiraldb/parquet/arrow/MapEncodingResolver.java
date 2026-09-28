@@ -7,17 +7,25 @@ import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.Type;
 
-/** Registry for canonical MAP shapes; names are intentionally not semantic. */
+/**
+ * Resolves a {@code MAP} group as parquet-format's LogicalTypes.md, "Maps", defines it. Names are
+ * not semantic: "these names may not be used in existing data and should not be enforced as
+ * errors when reading. (key and value can be identified by their position in case of
+ * misnaming.)"
+ */
 public final class MapEncodingResolver {
-  public enum Reason { NOT_MAP, OUTER_NOT_GROUP, MAP_KEY_VALUE_OUTER, OUTER_NOT_SINGLE_REPEATED_GROUP, ENTRY_NOT_GROUP, KEY_ONLY, EXTRA_ENTRY_FIELDS, OPTIONAL_KEY, REPEATED_KEY }
+  public enum Reason { NOT_MAP, OUTER_NOT_GROUP, OUTER_NOT_SINGLE_REPEATED_GROUP, ENTRY_NOT_GROUP, KEY_ONLY, EXTRA_ENTRY_FIELDS, OPTIONAL_KEY, REPEATED_KEY }
   public static final class Resolution {
     private final Type key; private final Type value;
     private Resolution(Type key, Type value) { this.key = key; this.value = value; }
     public Type key() { return key; } public Type value() { return value; }
   }
   public Resolution resolve(Type outer, String path) throws UnsupportedNestedEncodingException {
-    if (outer.getLogicalTypeAnnotation() instanceof LogicalTypeAnnotation.MapKeyValueTypeAnnotation) fail(path, Reason.MAP_KEY_VALUE_OUTER);
-    if (!(outer.getLogicalTypeAnnotation() instanceof LogicalTypeAnnotation.MapLogicalTypeAnnotation)) fail(path, Reason.NOT_MAP);
+    // "a group annotated with MAP_KEY_VALUE that is not contained by a MAP-annotated group should
+    // be handled as a MAP-annotated group" (Maps, Backward-compatibility rules). A map's repeated
+    // key_value group is never resolved as a field, so any MAP_KEY_VALUE group seen here is one.
+    if (!(outer.getLogicalTypeAnnotation() instanceof LogicalTypeAnnotation.MapLogicalTypeAnnotation
+        || outer.getLogicalTypeAnnotation() instanceof LogicalTypeAnnotation.MapKeyValueTypeAnnotation)) fail(path, Reason.NOT_MAP);
     if (outer.isPrimitive()) fail(path, Reason.OUTER_NOT_GROUP);
     GroupType map = outer.asGroupType();
     if (map.getFieldCount() != 1) fail(path, Reason.OUTER_NOT_SINGLE_REPEATED_GROUP);

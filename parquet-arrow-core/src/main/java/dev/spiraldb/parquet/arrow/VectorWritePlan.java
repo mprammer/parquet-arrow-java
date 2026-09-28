@@ -138,9 +138,10 @@ final class VectorWritePlan {
     final void required(FieldVector vector, int value) throws InvalidArrowValueException {
       if (!field.isNullable() && vector.isNull(value)) throw invalid(value, "required field is null");
     }
-    final void emit(Field child, int childIndex, Node writer, FieldVector vector, int value, RecordConsumer out) throws IOException {
+    /** {@code name} is the Parquet field's: an Arrow struct child's own, or a list/map level's spec name. */
+    final void emit(String name, int childIndex, Node writer, FieldVector vector, int value, RecordConsumer out) throws IOException {
       if (vector.isNull(value)) return;
-      out.startField(child.getName(), childIndex); writer.write(vector, value, out); out.endField(child.getName(), childIndex);
+      out.startField(name, childIndex); writer.write(vector, value, out); out.endField(name, childIndex);
     }
     final InvalidArrowValueException invalid(int value, String message) { return new InvalidArrowValueException(path + " row/index " + value + ": " + message); }
   }
@@ -208,7 +209,7 @@ final class VectorWritePlan {
     }
     @Override void write(FieldVector vector, int value, RecordConsumer out) throws IOException {
       StructVector struct = (StructVector) vector; out.startGroup();
-      for (int i = 0; i < children.length; i++) emit(children[i].field, i, children[i], (FieldVector) struct.getChild(children[i].field.getName()), value, out);
+      for (int i = 0; i < children.length; i++) emit(children[i].field.getName(), i, children[i], (FieldVector) struct.getChild(children[i].field.getName()), value, out);
       out.endGroup();
     }
     @Override boolean hasUnsignedLong() { for (Node child : children) if (child.hasUnsignedLong()) return true; return false; }
@@ -225,7 +226,7 @@ final class VectorWritePlan {
     }
     @Override void write(FieldVector vector, int value, RecordConsumer out) throws IOException {
       int start=start(vector,value), end=end(vector,value); FieldVector child=data(vector); out.startGroup();
-      if(start!=end) { out.startField("list",0); for(int i=start;i<end;i++){ out.startGroup(); emit(element.field,0,element,child,i,out); out.endGroup(); } out.endField("list",0); }
+      if(start!=end) { out.startField(ArrowSchemaToParquet.LIST,0); for(int i=start;i<end;i++){ out.startGroup(); emit(ArrowSchemaToParquet.ELEMENT,0,element,child,i,out); out.endGroup(); } out.endField(ArrowSchemaToParquet.LIST,0); }
       out.endGroup();
     }
     @Override boolean hasUnsignedLong(){return element.hasUnsignedLong();}
@@ -239,14 +240,14 @@ final class VectorWritePlan {
     private final int width;
     FixedListNode(Field field,Field inputField,int index,String path)throws IOException { super(field,inputField,index,path); width=((ArrowType.FixedSizeList)field.getType()).getListSize(); if(width<=0)throw new UnsupportedParquetTypeException(path+": fixed list size must be positive"); }
     @Override void validate(FieldVector vector,int value)throws IOException { required(vector,value);if(vector.isNull(value))return;if(!(vector instanceof FixedSizeListVector))throw invalid(value,"expected FixedSizeListVector");FieldVector child=data(vector);int start=Math.multiplyExact(value,width);if(start+width>child.getValueCount())throw invalid(value,"fixed-list child is truncated");for(int i=start;i<start+width;i++)element.validate(child,i); }
-    @Override void write(FieldVector vector,int value,RecordConsumer out)throws IOException { FieldVector child=data(vector);int start=value*width;out.startGroup();out.startField("list",0);for(int i=start;i<start+width;i++){out.startGroup();emit(element.field,0,element,child,i,out);out.endGroup();}out.endField("list",0);out.endGroup(); }
+    @Override void write(FieldVector vector,int value,RecordConsumer out)throws IOException { FieldVector child=data(vector);int start=value*width;out.startGroup();out.startField(ArrowSchemaToParquet.LIST,0);for(int i=start;i<start+width;i++){out.startGroup();emit(ArrowSchemaToParquet.ELEMENT,0,element,child,i,out);out.endGroup();}out.endField(ArrowSchemaToParquet.LIST,0);out.endGroup(); }
   }
 
   private static final class MapNode extends Node {
     private final Node key,value; private final Field keyField,valueField;
     MapNode(Field field,Field inputField,int index,String path)throws IOException { super(field,index,path);if(field.getChildren().size()!=1||field.getChildren().get(0).getChildren().size()!=2)throw new UnsupportedParquetTypeException(path+": map must contain key/value entry");if(inputField.getChildren().size()!=1||inputField.getChildren().get(0).getChildren().size()!=2)throw new InputSchemaMismatchException("input field does not match writer schema at "+path);Field entry=field.getChildren().get(0);Field inputEntry=inputField.getChildren().get(0);keyField=entry.getChildren().get(0);valueField=entry.getChildren().get(1);if(keyField.isNullable())throw new UnsupportedParquetTypeException(path+": map key must be required");key=Node.compile(keyField,inputEntry.getChildren().get(0),0,path+"."+keyField.getName());value=Node.compile(valueField,inputEntry.getChildren().get(1),1,path+"."+valueField.getName()); }
     @Override void validate(FieldVector vector,int row)throws IOException { required(vector,row);if(vector.isNull(row))return;if(!(vector instanceof MapVector))throw invalid(row,"expected MapVector");MapVector map=(MapVector)vector;int start=map.getOffsetBuffer().getInt((long)row*4),end=map.getOffsetBuffer().getInt((long)(row+1)*4);FieldVector entries=map.getDataVector();if(start<0||end<start||end>entries.getValueCount()||!(entries instanceof StructVector))throw invalid(row,"invalid map offsets");StructVector entry=(StructVector)entries;FieldVector keys=(FieldVector)entry.getChild(keyField.getName()), values=(FieldVector)entry.getChild(valueField.getName());if(keys==null||values==null)throw invalid(row,"missing map key/value child");java.util.ArrayList<MapKeyEquality.Key> seen=new java.util.ArrayList<>();for(int i=start;i<end;i++){if(keys.isNull(i))throw invalid(row,"null map key at entry "+(i-start));key.validate(keys,i);value.validate(values,i);MapKeyEquality.Key identity=MapKeyEquality.key(keys,i,path);int previous=seen.indexOf(identity);if(previous>=0)throw new InvalidArrowValueException(path+" row "+row+": duplicate map key at entries "+previous+" and "+(i-start));seen.add(identity);} }
-    @Override void write(FieldVector vector,int row,RecordConsumer out)throws IOException { MapVector map=(MapVector)vector;int start=map.getOffsetBuffer().getInt((long)row*4),end=map.getOffsetBuffer().getInt((long)(row+1)*4);StructVector entries=(StructVector)map.getDataVector();FieldVector keys=(FieldVector)entries.getChild(keyField.getName()),values=(FieldVector)entries.getChild(valueField.getName());out.startGroup();if(start!=end){out.startField("key_value",0);for(int i=start;i<end;i++){out.startGroup();emit(keyField,0,key,keys,i,out);emit(valueField,1,value,values,i,out);out.endGroup();}out.endField("key_value",0);}out.endGroup(); }
+    @Override void write(FieldVector vector,int row,RecordConsumer out)throws IOException { MapVector map=(MapVector)vector;int start=map.getOffsetBuffer().getInt((long)row*4),end=map.getOffsetBuffer().getInt((long)(row+1)*4);StructVector entries=(StructVector)map.getDataVector();FieldVector keys=(FieldVector)entries.getChild(keyField.getName()),values=(FieldVector)entries.getChild(valueField.getName());out.startGroup();if(start!=end){out.startField(ArrowSchemaToParquet.KEY_VALUE,0);for(int i=start;i<end;i++){out.startGroup();emit(ArrowSchemaToParquet.KEY,0,key,keys,i,out);emit(ArrowSchemaToParquet.VALUE,1,value,values,i,out);out.endGroup();}out.endField(ArrowSchemaToParquet.KEY_VALUE,0);}out.endGroup(); }
     @Override boolean hasUnsignedLong(){return key.hasUnsignedLong()||value.hasUnsignedLong();}
     @Override void prepare(DictionaryProvider dictionaries) throws IOException { key.prepare(dictionaries);value.prepare(dictionaries); }
   }

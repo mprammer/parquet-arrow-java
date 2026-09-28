@@ -9,8 +9,10 @@ import java.lang.invoke.MethodType;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
@@ -260,17 +262,32 @@ final class CoreParquetArrowReader extends ParquetArrowReader {
   private static Schema refine(Schema physical, Schema hint) {
     if (physical.getFields().size() != hint.getFields().size()) return physical;
     List<Field> fields = new ArrayList<>();
-    for (int i = 0; i < physical.getFields().size(); i++) fields.add(refine(physical.getFields().get(i), hint.getFields().get(i)));
+    for (int i = 0; i < physical.getFields().size(); i++) fields.add(refine(physical.getFields().get(i), hint.getFields().get(i), false, false));
     return new Schema(fields, hint.getCustomMetadata());
   }
-  private static Field refine(Field physical, Field hint) {
-    if (!physical.getName().equals(hint.getName()) || physical.isNullable() != hint.isNullable()
+  /**
+   * {@code hintName} marks a level whose Parquet name the spec fixes rather than the Arrow schema
+   * (a list's "element"; a map's "key_value", "key" and "value"): the writer emits the spec's
+   * name there, so the Arrow name is recovered from the hint. {@code entries} marks a map's entry
+   * struct, whose key and value are such levels too.
+   */
+  private static Field refine(Field physical, Field hint, boolean hintName, boolean entries) {
+    if ((!hintName && !physical.getName().equals(hint.getName())) || physical.isNullable() != hint.isNullable()
         || physical.getChildren().size() != hint.getChildren().size()) return physical;
+    ArrowType.ArrowTypeID id = physical.getType().getTypeID(), hinted = hint.getType().getTypeID();
+    boolean list = id == ArrowType.ArrowTypeID.List && (hinted == ArrowType.ArrowTypeID.List
+        || hinted == ArrowType.ArrowTypeID.LargeList || hinted == ArrowType.ArrowTypeID.FixedSizeList);
+    boolean map = id == ArrowType.ArrowTypeID.Map && hinted == ArrowType.ArrowTypeID.Map;
     List<Field> children = new ArrayList<>();
-    for (int i = 0; i < physical.getChildren().size(); i++) children.add(refine(physical.getChildren().get(i), hint.getChildren().get(i)));
+    for (int i = 0; i < physical.getChildren().size(); i++)
+      children.add(refine(physical.getChildren().get(i), hint.getChildren().get(i), list || map || entries, map));
     ArrowType type = refinedType(physical.getType(), hint.getType());
-    return new Field(physical.getName(), new org.apache.arrow.vector.types.pojo.FieldType(
-        physical.isNullable(), type, null, hint.getMetadata()), children);
+    // The hint's metadata, except where Parquet itself names an extension (VARIANT): the file's
+    // logical type outranks an advisory hint.
+    Map<String, String> metadata = new HashMap<>(hint.getMetadata());
+    metadata.putAll(physical.getMetadata());
+    return new Field(hintName ? hint.getName() : physical.getName(), new org.apache.arrow.vector.types.pojo.FieldType(
+        physical.isNullable(), type, null, metadata), children);
   }
   private static ArrowType refinedType(ArrowType physical, ArrowType hint) {
     if (physical.getTypeID() == ArrowType.ArrowTypeID.Utf8 && hint.getTypeID() == ArrowType.ArrowTypeID.LargeUtf8) return hint;
@@ -397,6 +414,10 @@ final class CoreParquetArrowReader extends ParquetArrowReader {
         @Override public void end() { }
       };
     }
+    // A null struct row never starts the converter above, so its children are indexed here as
+    // well: each child then holds a (null) slot for every struct row, as the batch's
+    // variable-width byte accounting reads them before end-of-batch fills the holes.
+    @Override void index(int value) { super.index(value); for (Node child : children) child.index(value); }
   }
   private static final class ListNode extends Node {
     private final ListVector list; private final Node element; private int start, count;
@@ -407,11 +428,7 @@ final class CoreParquetArrowReader extends ParquetArrowReader {
       if (field.getChildren().size() != 1) throw new CorruptParquetException("list Arrow child count disagreement at " + field.getName());
       list = (ListVector) vector;
       element = compile(field.getChildren().get(0), resolution.element(), (FieldVector) list.getDataVector());
-      GroupConverter repeated = new GroupConverter() {
-        @Override public Converter getConverter(int i) { if (i != 0) throw new IndexOutOfBoundsException(); return element.converter; }
-        @Override public void start() { element.index(start + count++); }
-        @Override public void end() { }
-      };
+      Converter repeated = entry(resolution, element, () -> element.index(start + count++));
       converter = new GroupConverter() {
         @Override public Converter getConverter(int i) { if (i != 0) throw new IndexOutOfBoundsException(); return repeated; }
         @Override public void start() { start = list.startNewValue(index); count = 0; }
@@ -429,11 +446,10 @@ final class CoreParquetArrowReader extends ParquetArrowReader {
       if (field.getChildren().size() != 1) throw new CorruptParquetException("large-list Arrow child count disagreement at " + field.getName());
       list = (LargeListVector) vector;
       element = compile(field.getChildren().get(0), resolution.element(), (FieldVector) list.getDataVector());
-      GroupConverter repeated = new GroupConverter() {
-        @Override public Converter getConverter(int i) { if (i != 0) throw new IndexOutOfBoundsException(); return element.converter; }
-        @Override public void start() { if (start + count > Integer.MAX_VALUE) throw new ConverterFailure(new CorruptParquetException("large-list child index exceeds Arrow capacity at " + field.getName())); element.index((int) (start + count++)); }
-        @Override public void end() { }
-      };
+      Converter repeated = entry(resolution, element, () -> {
+        if (start + count > Integer.MAX_VALUE) throw new ConverterFailure(new CorruptParquetException("large-list child index exceeds Arrow capacity at " + field.getName()));
+        element.index((int) (start + count++));
+      });
       converter = new GroupConverter() {
         @Override public Converter getConverter(int i) { if (i != 0) throw new IndexOutOfBoundsException(); return repeated; }
         @Override public void start() { start = list.startNewValue(index); count = 0; }
@@ -453,14 +469,10 @@ final class CoreParquetArrowReader extends ParquetArrowReader {
       if (width <= 0) throw new CorruptParquetException("invalid fixed-list width at " + field.getName());
       list = (FixedSizeListVector) vector;
       element = compile(field.getChildren().get(0), resolution.element(), (FieldVector) list.getDataVector());
-      GroupConverter repeated = new GroupConverter() {
-        @Override public Converter getConverter(int i) { if (i != 0) throw new IndexOutOfBoundsException(); return element.converter; }
-        @Override public void start() {
-          if (count == width) throw new ConverterFailure(new CorruptParquetException("fixed-list has more than " + width + " entries at " + field.getName()));
-          element.index(Math.multiplyExact(index, width) + count++);
-        }
-        @Override public void end() { }
-      };
+      Converter repeated = entry(resolution, element, () -> {
+        if (count == width) throw new ConverterFailure(new CorruptParquetException("fixed-list has more than " + width + " entries at " + field.getName()));
+        element.index(Math.multiplyExact(index, width) + count++);
+      });
       converter = new GroupConverter() {
         @Override public Converter getConverter(int i) { if (i != 0) throw new IndexOutOfBoundsException(); return repeated; }
         @Override public void start() { list.setNotNull(index); count = 0; }
@@ -469,6 +481,35 @@ final class CoreParquetArrowReader extends ParquetArrowReader {
         }
       };
     }
+  }
+  /**
+   * The converter parquet-java drives once per list entry; {@code next} indexes the element for
+   * that entry. A 3-level list repeats the wrapper group around the element. A 2-level list
+   * repeats the element itself, so the element's own converter is wrapped to index first.
+   */
+  private static Converter entry(ListEncodingResolver.Resolution resolution, Node element, Runnable next) {
+    if (!resolution.twoLevel()) return new GroupConverter() {
+      @Override public Converter getConverter(int i) { if (i != 0) throw new IndexOutOfBoundsException(); return element.converter; }
+      @Override public void start() { next.run(); }
+      @Override public void end() { }
+    };
+    if (element.converter.isPrimitive()) {
+      PrimitiveConverter value = element.converter.asPrimitiveConverter();
+      return new PrimitiveConverter() {
+        @Override public void addBoolean(boolean v) { next.run(); value.addBoolean(v); }
+        @Override public void addInt(int v) { next.run(); value.addInt(v); }
+        @Override public void addLong(long v) { next.run(); value.addLong(v); }
+        @Override public void addFloat(float v) { next.run(); value.addFloat(v); }
+        @Override public void addDouble(double v) { next.run(); value.addDouble(v); }
+        @Override public void addBinary(Binary v) { next.run(); value.addBinary(v); }
+      };
+    }
+    GroupConverter group = element.converter.asGroupConverter();
+    return new GroupConverter() {
+      @Override public Converter getConverter(int i) { return group.getConverter(i); }
+      @Override public void start() { next.run(); group.start(); }
+      @Override public void end() { group.end(); }
+    };
   }
   private static final class MapNode extends Node {
     private final ListVector map; private final StructVector entries; private final Node key, value; private int start, count;

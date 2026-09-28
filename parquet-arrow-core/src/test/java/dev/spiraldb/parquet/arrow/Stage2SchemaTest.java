@@ -62,10 +62,14 @@ class Stage2SchemaTest {
   }
 
   @Test void foreignNestedReasonCodesAreStable() throws Exception {
+    // A repeated primitive under LIST is a 2-level list (LogicalTypes.md, Lists, rule 1), not a reject.
     Type primitive = new PrimitiveType(Type.Repetition.REPEATED, PrimitiveType.PrimitiveTypeName.INT32, "element");
-    Type outer = org.apache.parquet.schema.Types.buildGroup(Type.Repetition.OPTIONAL).as(LogicalTypeAnnotation.listType()).addField(primitive).named("xs");
+    Type twoLevel = org.apache.parquet.schema.Types.buildGroup(Type.Repetition.OPTIONAL).as(LogicalTypeAnnotation.listType()).addField(primitive).named("xs");
+    assertTrue(new ListEncodingResolver().resolve(twoLevel, "xs").twoLevel());
+    Type optional = new PrimitiveType(Type.Repetition.OPTIONAL, PrimitiveType.PrimitiveTypeName.INT32, "element");
+    Type outer = org.apache.parquet.schema.Types.buildGroup(Type.Repetition.OPTIONAL).as(LogicalTypeAnnotation.listType()).addField(optional).named("xs");
     UnsupportedNestedEncodingException error = assertThrows(UnsupportedNestedEncodingException.class, () -> new ListEncodingResolver().resolve(outer, "xs"));
-    assertTrue(error.getMessage().startsWith("REPEATED_PRIMITIVE at xs"));
+    assertTrue(error.getMessage().startsWith("FIELD_NOT_REPEATED at xs"));
   }
 
   @Test void pageVersionMappingIsPublicAndExact() {
